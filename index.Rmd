@@ -1,0 +1,175 @@
+---
+title: "Using crosstalk with DT"
+author: "Travs Gerke"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::robobook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  fig.retina = 3
+)
+
+library(tidyverse)
+library(lubridate)
+library(DT)
+library(crosstalk)
+```
+
+```{r simulate-data, include=FALSE}
+### Function to simulate follow up tables
+sim_data_fup <- function(
+  n = 100,
+  dt_sim_start = "2000-01-01",
+  dt_sim_end = "2019-12-31",
+  seed = 12345
+) {
+  set.seed(seed)
+  
+  dt_sim_start <- as_date(dt_sim_start)
+  dt_sim_end <- as_date(dt_sim_end)
+  
+  # generate patient IDs
+  ids <- sample(111111:999999, n, replace = FALSE)
+
+  # simulate the data table
+  data_fup <- tibble(
+    id = ids,
+    ind_event = sample(0:1, n, replace = TRUE, prob = c(.8, .2)),
+    dt_first_contact = sample(dt_sim_start:dt_sim_end, n) %>% as_date(),
+  ) %>%
+    mutate(
+      dt_last_contact =
+        dt_first_contact + sample(1:3000, n, replace = TRUE),
+    ) %>%
+    mutate(
+      dt_last_contact =
+        if_else(dt_last_contact > dt_sim_end, dt_sim_end, dt_last_contact)
+    )
+  
+  data_fup
+}
+
+### Function to simulate demographics tables
+### Accepts a vector of IDs (usually identified from the follow up table)
+sim_data_demo <- function(
+  ids, 
+  age_range = 18:100,
+  race_opts = c("Black", "White")
+) {
+  n = length(ids)
+  
+  data_demo <- tibble(
+    id = ids,
+    age = sample(age_range, n, replace = TRUE),
+    sex = rep("F", n),
+    race = sample(race_opts, n, replace = TRUE, prob = c(.2, .8)),
+    ind_her2 = sample(0:1, n, replace = TRUE, prob = c(.2, .8))
+  )  
+  
+  data_demo
+}
+
+### Function to simulate treatment tables
+### Accepts a follow-up table for IDs and first/last contact dates
+sim_data_trt <- function(
+  data_fup,
+  n_trt_opts = 4, #the maximum number of treatments any patient can have
+  treatment_choices #a character vector of therapy options
+) {
+  n <- data_fup %>% n_distinct("id")
+  n_trt_opts <- 1:n_trt_opts
+  
+  # initialize patient_trt table; we'll bind rows at the end of each loop iteration
+  patient_trt <- tibble()
+  
+  for(i in 1:n) {
+    n_trt <- sample(n_trt_opts, size = 1)
+    
+    ith_patient <- data_fup %>% slice(i) 
+    
+    ith_patient_trt <- ith_patient %>%
+      select(id) %>%
+      slice(rep(1, times = n_trt)) %>% # elongate the table with a row for each treatment
+      mutate(
+        trt = sample(treatment_choices, size = n_trt, replace = TRUE),
+        dt_trt_start = sample(
+          seq(ith_patient$dt_first_contact, ith_patient$dt_last_contact, by="days") %>%
+            sort(),
+          size = n_trt, replace = FALSE
+        )
+      ) %>%
+      arrange(dt_trt_start) %>%
+      mutate(
+        dt_trt_end = lead(dt_trt_start) - 1,
+        dt_trt_end = case_when(
+          row_number() == n() ~ 
+            sample(seq(last(dt_trt_start), ith_patient$dt_last_contact, by="days"), 1),
+          TRUE ~ dt_trt_end
+        )
+      ) 
+    
+    patient_trt <- patient_trt %>% bind_rows(ith_patient_trt)
+  } 
+  
+  patient_trt
+}
+
+# simulate follow-up data
+data_fup <- sim_data_fup(n = 500)
+# simulate demographic data
+data_demo <- sim_data_demo(ids = data_fup$id)
+# simulate treatment data
+data_trt <- 
+  sim_data_trt(
+    data_fup, n_trt_opts = 5, 
+    treatment_choices = c(
+      "TRASTUZUMAB",
+      "PACLITAXEL/CAPECITABINE",
+      "PERTUZUMAB",
+      "PACLITAXEL",
+      "HERCEPTIN",
+      "HERCEPTIN/PACLITAXEL"
+    )
+  )
+```
+
+```{r crosstalk-with-dt, include=FALSE}
+# set up a group of SharedData objects
+shared_demo <- SharedData$new(data_demo, key = ~id, group = "shared_obj")
+shared_trt <- SharedData$new(data_trt, key = ~id, group = "shared_obj")
+shared_fup <- SharedData$new(data_fup, key = ~id, group = "shared_obj")
+
+# send the group to the filtering selection box
+filter_select(
+  id = "id-selector", label = "ID", 
+  sharedData = shared_demo, group = ~id
+)
+```
+
+```{r id-filter}
+filter_select(
+  id = "id-selector", label = "ID", 
+  sharedData = shared_demo, group = ~id
+)
+```
+
+## Demographics
+
+```{r demographics}
+datatable(shared_demo)
+```
+
+## Treatment
+
+```{r treatment}
+datatable(shared_trt)
+```
+
+## Follow-up
+
+```{r fup}
+datatable(shared_fup)
+```
